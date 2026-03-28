@@ -1,0 +1,32 @@
+# ── Segurança ─────────────────────────────────────────────
+.env
+
+# ── Ambientes virtuais ────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Outputs gerados pelo agente ───────────────────────────
+backlog/*.docx
+backlog/*.xlsx
+
+# ── IDEs e editores ───────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ── Sistema operacional ───────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
