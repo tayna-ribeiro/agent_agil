@@ -103,6 +103,54 @@ def coletar_documentos() -> str:
             aviso(f"Erro ao ler documento: {e}")
     return "\n\n".join(textos)
 
+def coletar_mudancas() -> str:
+    """Coleta mudanças/melhorias via terminal ou arquivo .txt."""
+    secao("Entrada de Mudanças / Melhorias")
+    info("Como deseja informar as mudanças?")
+    info("  [1] Digitar diretamente no terminal")
+    info("  [2] Informar um arquivo .txt com as mudanças listadas")
+
+    while True:
+        opcao = pergunta("Escolha (1 ou 2):").strip()
+        if opcao in ("1", "2"):
+            break
+        aviso("Opção inválida. Digite 1 ou 2.")
+
+    if opcao == "2":
+        while True:
+            caminho = pergunta("Caminho do arquivo .txt:").strip('"').strip("'")
+            if not caminho:
+                aviso("Informe o caminho do arquivo.")
+                continue
+            p = Path(caminho)
+            if not p.exists():
+                aviso(f"Arquivo não encontrado: {caminho}")
+                continue
+            if p.suffix.lower() != ".txt":
+                aviso("Apenas arquivos .txt são aceitos neste modo.")
+                continue
+            texto = p.read_text(encoding="utf-8")
+            ok(f"Arquivo lido: {p.name} ({len(texto):,} caracteres)")
+            return texto
+
+    # Modo terminal: digitar mudanças linha a linha
+    info("Digite cada mudança/melhoria e pressione ENTER.")
+    info("Seja específico: descreva O QUE muda e POR QUÊ (se souber).")
+    info("Para finalizar, pressione ENTER numa linha em branco.\n")
+    mudancas = []
+    idx = 1
+    while True:
+        item = pergunta(f"Mudança {idx}:").strip()
+        if not item:
+            if not mudancas:
+                aviso("Nenhuma mudança informada. Tente novamente.")
+                continue
+            break
+        mudancas.append(f"{idx}. {item}")
+        ok(f"Registrado: {item[:80]}{'...' if len(item) > 80 else ''}")
+        idx += 1
+    return "\n".join(mudancas)
+
 # ════════════════════════════════════════════════════════════
 # EXTRAÇÃO DE REQUISITOS VIA CLAUDE
 # ════════════════════════════════════════════════════════════
@@ -190,6 +238,52 @@ Retorne APENAS um JSON válido, sem texto adicional, sem markdown, sem backticks
 
 REQUISITOS EXTRAÍDOS:
 {requisitos}
+"""
+
+PROMPT_MUDANCAS_BASE = """
+Você é um analista de requisitos sênior especializado em Scrum e projetos legados.
+
+Abaixo está uma lista de mudanças, melhorias e ajustes identificados em um sistema já existente,
+sem documento formal de requisitos. Sua tarefa é organizar essas mudanças em um backlog estruturado.
+
+Regras:
+- Agrupe mudanças relacionadas em Épicos temáticos (ex: "Melhoria de UX", "Correção de Fluxo Cadastral")
+- Trate cada mudança descrita como um ou mais Requisitos Funcionais (RF)
+- Identifique atores afetados (ex: Usuário, Administrador, Sistema)
+- Se não houver informação suficiente para um campo, use valores genéricos como "Sistema legado" ou "A definir"
+- NÃO invente mudanças além das descritas — só organize o que foi informado
+
+Retorne APENAS um JSON válido, sem texto adicional, sem markdown, sem backticks:
+
+{{
+  "projeto": "nome do projeto ou sistema",
+  "sistema": "nome do sistema/plataforma",
+  "descricao": "resumo das mudanças em 2-3 linhas",
+  "atores": ["lista de atores afetados"],
+  "epicos": [
+    {{
+      "id": "EP01",
+      "nome": "nome do épico",
+      "descricao": "descrição do épico"
+    }}
+  ],
+  "requisitos_funcionais": [
+    {{
+      "id": "RF01",
+      "descricao": "descrição completa da mudança/melhoria",
+      "epico_id": "EP01",
+      "atores": ["Usuário"]
+    }}
+  ],
+  "regras_negocio": [],
+  "requisitos_nao_funcionais": [],
+  "fora_de_escopo": [],
+  "dependencias_tecnicas": [],
+  "observacoes": "observações relevantes sobre as mudanças"
+}}
+
+MUDANÇAS IDENTIFICADAS:
+{mudancas}
 """
 
 def chamar_claude(prompt: str) -> str:
@@ -749,23 +843,40 @@ def gerar_xlsx(requisitos: dict, user_stories: list, sprints: list, caminho: str
 
 def main():
     titulo("AGENTE DE BACKLOG SCRUM")
-    info("Este agente lê documentos de requisitos e gera automaticamente")
-    info("o backlog com sprints semanais, User Stories e planilha de acompanhamento.")
+    info("Este agente gera o backlog com sprints semanais, User Stories e planilha de acompanhamento.")
     info(f"Modelo: {MODEL} via API Anthropic\n")
 
-    # 1. Coletar documentos
-    texto_documentos = coletar_documentos()
+    # ── Seleção de modo ──────────────────────────────────────────
+    secao("Selecione o Modo de Operação")
+    info("  [1] Tenho documento(s) de requisitos  → backlog completo (DOCX + XLSX)")
+    info("  [2] Vou descrever mudanças/melhorias  → planilha de acompanhamento (XLSX)")
+    while True:
+        modo = pergunta("Modo (1 ou 2):").strip()
+        if modo in ("1", "2"):
+            break
+        aviso("Opção inválida. Digite 1 ou 2.")
 
-    # 2. Extrair requisitos
-    secao("Analisando documentos com IA...")
+    # ── Coleta de entrada ────────────────────────────────────────
+    if modo == "1":
+        texto_entrada = coletar_documentos()
+        prompt_extracao = PROMPT_EXTRACAO_BASE.format(documentos=texto_entrada)
+    else:
+        titulo("MODO: MUDANÇAS / MELHORIAS")
+        info("Use este modo para projetos legados sem documento de requisitos formal.")
+        info("Descreva as mudanças — o agente organiza em épicos, US e sprints.\n")
+        texto_entrada = coletar_mudancas()
+        prompt_extracao = PROMPT_MUDANCAS_BASE.format(mudancas=texto_entrada)
+
+    # ── Extração / organização via IA ────────────────────────────
+    secao("Analisando com IA...")
     print("   Aguarde — isso pode levar alguns segundos...")
-    prompt_ext = PROMPT_EXTRACAO_BASE.format(documentos=texto_documentos)
-    resposta_ext = chamar_claude(prompt_ext)
+    resposta_ext = chamar_claude(prompt_extracao)
     requisitos = extrair_json(resposta_ext)
     ok(f"Projeto identificado: {requisitos.get('projeto','—')}")
     ok(f"Épicos extraídos: {len(requisitos.get('epicos',[]))}")
     ok(f"Requisitos funcionais: {len(requisitos.get('requisitos_funcionais',[]))}")
-    ok(f"Regras de negócio: {len(requisitos.get('regras_negocio',[]))}")
+    if requisitos.get("regras_negocio"):
+        ok(f"Regras de negócio: {len(requisitos.get('regras_negocio',[]))}")
     ok(f"Atores: {', '.join(requisitos.get('atores',[]))}")
 
     # Mostrar épicos para confirmação
@@ -775,11 +886,14 @@ def main():
 
     confirmar = pergunta("\nOs épicos estão corretos? (s/n):").lower()
     if confirmar != "s":
-        aviso("Ajuste o documento de requisitos e rode o agente novamente.")
-        aviso("Dica: adicione mais contexto ou separe os épicos manualmente no documento.")
+        if modo == "1":
+            aviso("Ajuste o documento de requisitos e rode o agente novamente.")
+            aviso("Dica: adicione mais contexto ou separe os épicos manualmente no documento.")
+        else:
+            aviso("Ajuste as descrições das mudanças e rode o agente novamente.")
         return
 
-    # 3. Gerar User Stories
+    # ── Gerar User Stories ───────────────────────────────────────
     secao("Gerando User Stories...")
     prompt_us = PROMPT_GERAR_US_BASE.format(requisitos=json.dumps(requisitos, ensure_ascii=False))
     resposta_us = chamar_claude(prompt_us)
@@ -787,52 +901,54 @@ def main():
     user_stories = dados_us.get("user_stories", [])
     ok(f"User Stories geradas: {len(user_stories)}")
 
-    # Mostrar resumo das US
     secao("User Stories geradas:")
     for us in user_stories:
         info(f"  {us['id']} — {us['titulo']}  [{us.get('prioridade','Alta')}]")
 
     confirmar2 = pergunta("\nAs User Stories parecem corretas? (s/n):").lower()
     if confirmar2 != "s":
-        aviso("Ajuste o documento e rode novamente, ou edite manualmente o backlog gerado.")
+        aviso("Ajuste as informações e rode novamente, ou edite manualmente a planilha gerada.")
 
-    # 4. Coletar dias úteis
+    # ── Coletar dias úteis ───────────────────────────────────────
     user_stories = coletar_dias_uteis(user_stories)
 
-    # 5. Distribuir sprints
+    # ── Distribuir sprints ───────────────────────────────────────
     secao("Distribuindo em sprints semanais...")
     sprints = distribuir_sprints(user_stories)
     ok(f"Total de sprints: {len(sprints)}")
     ok(f"Prazo estimado: ~{len(sprints)} semanas")
 
-    # Resumo de sprints
     secao("Distribuição final:")
     for sp in sprints:
         cards_str = " + ".join(us["id"] for us in sp["cards"])
         info(f"  Sprint {sp['numero']:02d} ({sp['semana']}) → {cards_str} [{sp['dias_estimados']}d / {sp['buffer']}]")
 
-    # 6. Definir nome do projeto e pasta de saída
+    # ── Configuração de saída ────────────────────────────────────
     secao("Configuração de Saída")
-    nome_projeto = pergunta("Nome do projeto para nomear os arquivos (sem espaços, ex: SGAU_URMULTI):") or "projeto"
+    nome_projeto = pergunta("Nome do projeto para nomear os arquivos (sem espaços, ex: SGAU_FASE2):") or "projeto"
     nome_projeto = re.sub(r"[^a-zA-Z0-9_\-]", "_", nome_projeto)
 
     pasta_saida = pergunta("Pasta de saída (ENTER para ./backlog):").strip() or "./backlog"
     Path(pasta_saida).mkdir(parents=True, exist_ok=True)
 
     data_str = datetime.date.today().strftime("%Y%m%d")
-    caminho_docx = f"{pasta_saida}/Backlog_{nome_projeto}_{data_str}.docx"
     caminho_xlsx = f"{pasta_saida}/Acompanhamento_{nome_projeto}_{data_str}.xlsx"
 
-    # 7. Gerar arquivos
+    # ── Gerar arquivos ───────────────────────────────────────────
     secao("Gerando arquivos...")
-    gerar_docx(nome_projeto, requisitos, user_stories, sprints, caminho_docx)
-    ok(f"Backlog DOCX: {caminho_docx}")
+
+    if modo == "1":
+        caminho_docx = f"{pasta_saida}/Backlog_{nome_projeto}_{data_str}.docx"
+        gerar_docx(nome_projeto, requisitos, user_stories, sprints, caminho_docx)
+        ok(f"Backlog DOCX: {caminho_docx}")
+
     gerar_xlsx(requisitos, user_stories, sprints, caminho_xlsx)
     ok(f"Planilha XLSX: {caminho_xlsx}")
 
-    # Fim
+    # ── Resumo final ─────────────────────────────────────────────
     titulo("BACKLOG GERADO COM SUCESSO!")
-    print(f"""
+    if modo == "1":
+        print(f"""
   {VERDE}Arquivos gerados:{RESET}
     📄  {caminho_docx}
     📊  {caminho_xlsx}
@@ -841,6 +957,16 @@ def main():
     1. Valide o backlog com o analista de requisitos
     2. Apresente as US ao solicitante na reunião de alinhamento
     3. Ajuste dias úteis se necessário e redistribua manualmente
+""")
+    else:
+        print(f"""
+  {VERDE}Arquivo gerado:{RESET}
+    📊  {caminho_xlsx}
+
+  {CINZA}Próximos passos:{RESET}
+    1. Revise os cards na aba Backlog e ajuste prioridades
+    2. Atualize o status dos cards conforme o andamento (aba Kanban)
+    3. Compartilhe com a equipe e alinhe a sequência de sprints
 """)
 
 if __name__ == "__main__":

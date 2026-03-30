@@ -1,11 +1,16 @@
-# 🤖 Agente de Backlog 
+# 🤖 Agente de Backlog
 
 Script Python que lê documentos de requisitos (`.docx`, `.pdf`, `.txt`) e gera
 automaticamente o backlog completo — com User Stories, critérios de aceitação,
 distribuição em sprints semanais, documento Word formatado e planilha de acompanhamento
 com Kanban.
 
-O analista de requisitos entrega o documento → você roda o agente → backlog pronto para validar.
+O agente opera em **dois modos**:
+
+| Modo | Quando usar | Saída |
+|------|-------------|-------|
+| **[1] Documento de Requisitos** | Projetos novos com análise formal | DOCX + XLSX |
+| **[2] Mudanças / Melhorias** | Projetos legados sem documento | XLSX |
 
 ---
 
