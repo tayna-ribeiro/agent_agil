@@ -2,8 +2,8 @@
 
 Script Python que lê documentos de requisitos (`.docx`, `.pdf`, `.txt`) e gera
 automaticamente o backlog completo — com User Stories, critérios de aceitação,
-distribuição em sprints semanais, documento Word formatado e planilha de acompanhamento
-com Kanban.
+distribuição customizável em Sprints, documento Word formatado e planilha gerencial 
+automatizada com Kanban e Dashboard Executivo.
 
 O agente opera em **dois modos**:
 
@@ -90,23 +90,21 @@ python backlog_agent.py
    → Dependências entre US
    Você revisa e confirma
 
-4. ESTIMATIVA DE DIAS (sua participação)
-   Para cada US o terminal pergunta: "Quantos dias úteis?"
-   → Responda de 1 a 5
-   → Se informar mais de 5, o agente sugere dividir a US em duas
+4. ESTIMATIVA DE HORAS (sua participação)
+   Para cada US o terminal pergunta: "Quantas horas úteis de Dev e Teste?"
+   → Responda com um número inteiro
+   → Se transbordar o orçamento da sprint, você pode confirmar ou abortar
 
 5. DISTRIBUIÇÃO EM SPRINTS
-   O agente distribui automaticamente:
-   → 1 sprint = 1 semana = 5 dias úteis
+   O agente distribui automaticamente usando Horas Reais:
+   → Baseado nas semanas configuráveis da sprint e carga horária/dia
+   → Reserva um valor em horas fixado no fluxo para Deploy no fim do clico
    → Respeita dependências técnicas entre US
-   → Agrupa US pequenas (1–2 dias) quando possível
-   → Calcula o buffer de cada sprint explicitamente
-   Você vê o resumo antes de gerar os arquivos
 
 6. GERAÇÃO DOS ARQUIVOS
    Informe o nome do projeto e a pasta de saída
-   → Backlog .docx gerado e formatado
-   → Planilha .xlsx com Kanban, Sprints e Legenda
+   → Backlog .docx gerado e formatado por Horas
+   → Planilha .xlsx inteligente com Resumo Gerencial, Sprints com Status automático e Kanban dinâmico
 ```
 
 ---
@@ -133,17 +131,18 @@ Altere a variável `MODEL` no script conforme a necessidade:
 ### Backlog `.docx`
 - Capa com nome do projeto, data e total de sprints
 - Visão geral com épicos, atores e itens fora de escopo
-- Cada sprint com objetivo, dias estimados, buffer e entrega
-- Cada card com história, critérios de aceitação, tela, campos e dependências
+- Cada sprint com objetivo, horas estimadas de esforço, horas de deploy estipuladas
+- Cada card com história, critérios de aceitação, tela, campos, horas e dependências
 
-### Planilha `.xlsx` — 4 abas
+### Planilha `.xlsx` — 5 abas
 
 | Aba | Conteúdo |
 |-----|----------|
-| **Backlog** | Todos os cards com sprint, semana, dias, prioridade e dropdown de status |
-| **Sprints** | Resumo dos sprints com totais calculados por fórmula |
-| **Kanban** | Colunas To Do · In Progress · In Review · Done · Blocked |
-| **Legenda** | Referência de cores por status e módulo |
+| **Resumo** | Dashboard executivo com cálculo da Timeline do projeto e conversões macro de horas. |
+| **Backlog** | Todos os cards com sprint, horas estimadas de esforço/teste, prioridade e status selecionável. |
+| **Sprints** | Resumo dos sprints com totais de horas calculados, e Status interligado pela fórmula Backlog. |
+| **Kanban** | Espelho dinâmico do Backlog em fluxo contínuo implementado com fórmulas de Matriz Automática. |
+| **Legenda** | Referência de cores por status, siglas e módulo. |
 
 ---
 
@@ -163,12 +162,11 @@ Altere a variável `MODEL` no script conforme a necessidade:
 
 | Regra | Valor |
 |-------|-------|
-| Duração do sprint | 1 semana (5 dias úteis) |
-| Máximo de dias por US | 5 dias úteis |
-| Quem estima os dias | O DEV — durante a execução do agente |
-| US com mais de 5 dias | Agente sugere divisão em 2 US |
-| Review | Conforme disponibilidade do solicitante |
-| Buffer | Calculado automaticamente por sprint |
+| Duração do sprint | Personalizável na inicialização (Ex: 2 a 4 semanas) |
+| Capacidade da sprint | Calculada via (Semanas) * (Carga Produtiva Horas/Dia) |
+| Como estimar o esforço | Em **Horas Úteis** individualmente em Desenvolvimento e Validações de Teste |
+| Deploy e Produção | Abstraído de cada História e reservado globalmente no cálculo da Sprint |
+| Transbordo de Histórias | Agente avisa do transbordo de limite de horas se alocar o recurso individualmente |
 
 ---
 
