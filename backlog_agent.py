@@ -437,6 +437,89 @@ def ultimo_dia_util_ate(data: datetime.date, feriados: set) -> datetime.date:
     return data
 
 # ════════════════════════════════════════════════════════════
+# UTILITÁRIOS DE DATAS (FASES DA SPRINT)
+# ════════════════════════════════════════════════════════════
+
+def adicionar_dias_uteis(data: datetime.date, n: int, feriados: set) -> datetime.date:
+    """Adiciona n dias úteis à data (n negativo = recua)."""
+    if n == 0:
+        return data
+    delta = 1 if n > 0 else -1
+    acumulado = 0
+    d = data
+    while acumulado < abs(n):
+        d += datetime.timedelta(days=delta)
+        if d.weekday() < 5 and d not in feriados:
+            acumulado += 1
+    return d
+
+def ultimo_dia_semana_util_antes(data_limite: datetime.date, dia_semana: int, feriados: set):
+    """Retorna a última ocorrência de dia_semana (0=Seg..4=Sex) em ou antes de data_limite
+    que não seja feriado. Retorna None se não encontrar em 14 dias."""
+    d = data_limite
+    for _ in range(14):
+        if d.weekday() == dia_semana and d not in feriados:
+            return d
+        d -= datetime.timedelta(days=1)
+    return None
+
+def calcular_datas_fases_sprint(
+    sprint: dict, dias_teste_aceitacao: int, dias_homologacao: int,
+    dia_apresentacao: int, todos_feriados: set
+) -> dict:
+    """
+    Calcula as datas-limite de cada fase dentro da sprint, de trás para frente.
+    Retorna: data_dev_limite, data_teste_aceitacao, data_apresentacao,
+             data_homologacao, data_deploy, sprint_apertada (bool).
+    """
+    data_inicio    = sprint["data_inicio"]
+    data_fim       = sprint["data_fim"]
+    sprint_apertada = False
+
+    # 1. Deploy = último dia útil da sprint
+    data_deploy = data_fim
+
+    # 2. Homologação: termina 1 dia útil antes do deploy
+    if dias_homologacao > 0:
+        data_homologacao   = adicionar_dias_uteis(data_deploy, -1, todos_feriados)
+        homologacao_inicio = (adicionar_dias_uteis(data_homologacao, -(dias_homologacao - 1), todos_feriados)
+                              if dias_homologacao > 1 else data_homologacao)
+        antes_homologacao  = adicionar_dias_uteis(homologacao_inicio, -1, todos_feriados)
+    else:
+        data_homologacao  = data_deploy
+        antes_homologacao = adicionar_dias_uteis(data_deploy, -1, todos_feriados)
+
+    # 3. Apresentação: último dia preferido antes da homologação
+    data_apresentacao = ultimo_dia_semana_util_antes(antes_homologacao, dia_apresentacao, todos_feriados)
+    if data_apresentacao is None or data_apresentacao < data_inicio:
+        data_apresentacao = antes_homologacao  # fallback sem dia preferido
+        sprint_apertada   = True
+
+    # 4. Teste de Aceitação: termina 1 dia útil antes da apresentação
+    if dias_teste_aceitacao > 0:
+        data_teste_aceit = adicionar_dias_uteis(data_apresentacao, -1, todos_feriados)
+        teste_inicio     = (adicionar_dias_uteis(data_teste_aceit, -(dias_teste_aceitacao - 1), todos_feriados)
+                            if dias_teste_aceitacao > 1 else data_teste_aceit)
+        data_dev_limite  = adicionar_dias_uteis(teste_inicio, -1, todos_feriados)
+    else:
+        data_teste_aceit = adicionar_dias_uteis(data_apresentacao, -1, todos_feriados)
+        data_dev_limite  = data_teste_aceit
+
+    # Verificar sprint apertada (dev terminaria antes do início)
+    if data_dev_limite < data_inicio:
+        sprint_apertada = True
+        data_dev_limite = data_inicio
+
+    return {
+        "data_dev_limite":      data_dev_limite,
+        "data_teste_aceitacao": data_teste_aceit,
+        "data_apresentacao":    data_apresentacao,
+        "data_homologacao":     data_homologacao,
+        "data_deploy":          data_deploy,
+        "sprint_apertada":      sprint_apertada,
+    }
+
+# ════════════════════════════════════════════════════════════
 # DISTRIBUIÇÃO EM SPRINTS SEMANAIS
 # ════════════════════════════════════════════════════════════
 
@@ -778,14 +861,23 @@ def gerar_xlsx(requisitos: dict, user_stories: list, sprints: list, configs: dic
     total_horas = sum(us.get("horas_estimadas", 0) for us in user_stories) + total_horas_fixo
     dias_uteis_eq = total_horas / configs["horas_por_dia"] if configs.get("horas_por_dia") else 0
 
-    data_ini_fmt = configs["data_inicio"].strftime("%d/%m/%Y") if configs.get("data_inicio") else "—"
+    data_ini_fmt   = configs["data_inicio"].strftime("%d/%m/%Y") if configs.get("data_inicio") else "—"
+    data_fim_proj  = sprints[-1]["data_fim"] if sprints else None
+    data_fim_fmt   = data_fim_proj.strftime("%d/%m/%Y") if data_fim_proj else "—"
+    duracao_dias   = (data_fim_proj - configs["data_inicio"]).days if (data_fim_proj and configs.get("data_inicio")) else 0
+    duracao_sem    = round(duracao_dias / 7)
+    _DIAS_NOMES    = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
+    dia_apres_nome = _DIAS_NOMES[configs.get("dia_apresentacao", 2)]
     items = [
         ("Configuração da Sprint", ""),
         ("Data de Início do Projeto:", data_ini_fmt),
+        ("Data de Término Estimada:", data_fim_fmt),
+        ("Duração Total do Projeto:", f"~{duracao_sem} semanas ({duracao_dias} dias corridos)"),
         ("Duração da Sprint:", f"{configs['semanas_sprint']} Semana(s)"),
         ("Horas Produtivas por Dev/Dia:", f"{configs['horas_por_dia']} horas"),
         ("Teste de Aceitação por Sprint:", f"{configs.get('dias_teste_aceitacao', 0)} dia(s) ({configs.get('horas_teste_aceitacao', 0)}h)"),
         ("Homologação do Cliente por Sprint:", f"{configs.get('dias_homologacao', 0)} dia(s) ({configs.get('horas_homologacao', 0)}h)"),
+        ("Dia de Apresentação preferido:", f"{dia_apres_nome}-feira"),
         ("Orçamento de Deploy por Sprint:", f"{configs['horas_deploy_sprint']} horas"),
         ("Capacidade Bruta da Sprint:", f"{configs['horas_por_sprint']} horas"),
         ("", ""),
@@ -857,7 +949,7 @@ def gerar_xlsx(requisitos: dict, user_stories: list, sprints: list, configs: dic
             ws.cell(row=row_i,column=13,value="").border=brd_xl()
             ws.row_dimensions[row_i].height=26; row_i+=1
 
-    dv=DataValidation(type="list",formula1='"To Do,In Progress,In Review,Done,Blocked"',showDropDown=True)
+    dv=DataValidation(type="list",formula1='"To Do,In Progress,In Acceptance Test,In Review,Done,Blocked"',showDropDown=True)
     dv.sqref=f"K3:K{row_i-1}"; ws.add_data_validation(dv)
 
     # ── Aba Sprints ──────────────────────────────────────────
@@ -918,13 +1010,13 @@ def gerar_xlsx(requisitos: dict, user_stories: list, sprints: list, configs: dic
     ws2.row_dimensions[tr].height=26
 
     # ── Aba Kanban ───────────────────────────────────────────
-    ws3=wb.create_sheet("Kanban"); ws3.merge_cells("A1:E1")
+    ws3=wb.create_sheet("Kanban"); ws3.merge_cells("A1:F1")
     ck=ws3["A1"]; ck.value="KANBAN · Mova os cards conforme o andamento"
     ck.font=fnt_xl(bold=True,size=11,color="FFFFFF"); ck.fill=fill_xl("1F4E79")
     ck.alignment=aln_xl(h="center",v="center"); ws3.row_dimensions[1].height=28
-    KCOLS=["To Do","In Progress","In Review","Done","Blocked"]
-    KCOLORS=["F5F5F5","FFF9C4","FFF3E0","E8F5E9","FFEBEE"]
-    for i,(col,w) in enumerate(zip(KCOLS,[30,30,30,30,30]),1):
+    KCOLS=["To Do","In Progress","In Acceptance Test","In Review","Done","Blocked"]
+    KCOLORS=["F5F5F5","FFF9C4","E3F2FD","FFF3E0","E8F5E9","FFEBEE"]
+    for i,(col,w) in enumerate(zip(KCOLS,[30,30,30,30,30,30]),1):
         cell=ws3.cell(row=2,column=i,value=col)
         cell.font=fnt_xl(bold=True,color="FFFFFF"); cell.fill=fill_xl("2E75B6")
         cell.alignment=aln_xl(h="center",v="center"); cell.border=brd_xl()
@@ -956,6 +1048,7 @@ def gerar_xlsx(requisitos: dict, user_stories: list, sprints: list, configs: dic
             c.alignment=aln_xl(h="center",v="center"); c.border=brd_xl()
     status_items=[("To Do","Card ainda não iniciado","F5F5F5"),
                   ("In Progress","Em desenvolvimento neste sprint","FFF9C4"),
+                  ("In Acceptance Test","Teste de aceitação - Analista Requisitos","E3F2FD"),
                   ("In Review","Aguardando validação / aprovação","FFF3E0"),
                   ("Done","Entregue, testado e validado","E8F5E9"),
                   ("Blocked","Impedido por dependência ou dúvida","FFEBEE")]
@@ -973,7 +1066,137 @@ def gerar_xlsx(requisitos: dict, user_stories: list, sprints: list, configs: dic
             c.font=fnt_xl(bold=(col==3),size=10,color=fc2); c.fill=fill_xl(cor)
             c.alignment=aln_xl(h=align,v="center"); c.border=brd_xl()
 
+    gerar_aba_cronograma(wb, requisitos, sprints, configs)
     wb.save(caminho)
+
+# ════════════════════════════════════════════════════════════
+# GERAÇÃO DA ABA CRONOGRAMA
+# ════════════════════════════════════════════════════════════
+
+def gerar_aba_cronograma(wb, requisitos: dict, sprints: list, configs: dict):
+    """Gera a aba 'Cronograma' com datas-limite de cada fase por sprint."""
+    projeto_nome       = requisitos.get("projeto", "Projeto")
+    data_inicio        = configs["data_inicio"]
+    data_fim_proj      = sprints[-1]["data_fim"] if sprints else data_inicio
+    todos_feriados     = feriados_periodo(data_inicio, data_fim_proj + datetime.timedelta(days=90))
+    dias_teste_aceit   = configs.get("dias_teste_aceitacao", 0)
+    dias_homolog       = configs.get("dias_homologacao", 0)
+    dia_apres_idx      = configs.get("dia_apresentacao", 2)
+    _DIAS_NOMES        = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
+    dia_nome           = _DIAS_NOMES[dia_apres_idx]
+
+    ws = wb.create_sheet("Cronograma")
+    ws.freeze_panes = "A3"
+
+    # ── Título ─────────────────────────────────────────────
+    ws.merge_cells("A1:J1")
+    ct = ws["A1"]
+    ct.value = (f"CRONOGRAMA · {projeto_nome.upper()}  |  {len(sprints)} Sprints  "
+                f"|  Início: {data_inicio.strftime('%d/%m/%Y')}  "
+                f"|  Término: {data_fim_proj.strftime('%d/%m/%Y')}  "
+                f"|  Apresentações: {dia_nome}s-feiras")
+    ct.font      = fnt_xl(bold=True, size=10, color="FFFFFF")
+    ct.fill      = fill_xl("1F4E79")
+    ct.alignment = aln_xl(h="center", v="center")
+    ws.row_dimensions[1].height = 28
+
+    # ── Cabeçalhos ─────────────────────────────────────────
+    COLS = [
+        "Sprint", "Data\nInício", "Cards", "Entrega Principal",
+        "Desenvolvimento\n(data limite)",
+        "Teste de Aceitação\n(data limite)",
+        "Apresentação\nao Solicitante",
+        "Homologação\n(data limite)",
+        "Deploy /\nProdução",
+        "Data Fim\nSprint",
+    ]
+    WIDS        = [12, 13, 22, 36, 20, 22, 20, 20, 15, 14]
+    # Cor de cabeçalho por fase (fixo azul para colunas de info, específico por fase)
+    HDR_FILLS   = ["2E75B6","2E75B6","2E75B6","2E75B6",
+                   "1565C0","E65100","2E7D32","6A1B9A","4A148C","2E75B6"]
+    # Cor de célula de dado por fase
+    FASE_FILLS  = ["D4E6F1", "FEF5E7", "E8F8F5", "F5EEF8", "EDE7F6"]
+    COR_APERTADA = "FFA726"  # laranja — sprint apertada
+
+    for i, (col, w, hf) in enumerate(zip(COLS, WIDS, HDR_FILLS), 1):
+        cell = ws.cell(row=2, column=i, value=col)
+        cell.font      = fnt_xl(bold=True, color="FFFFFF")
+        cell.fill      = fill_xl(hf)
+        cell.alignment = aln_xl(h="center", v="center", wrap=True)
+        cell.border    = brd_xl()
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[2].height = 32
+
+    # ── Linhas de dados ────────────────────────────────────
+    for sp_idx, sprint in enumerate(sprints, 3):
+        bg    = MODULO_CORES[(sp_idx - 3) % len(MODULO_CORES)]
+        fases = calcular_datas_fases_sprint(
+            sprint, dias_teste_aceit, dias_homolog, dia_apres_idx, todos_feriados
+        )
+        cards_str = " + ".join(us["id"] for us in sprint["cards"])
+
+        # Colunas de informação (A-D)
+        base_vals = [
+            f"Sprint {sprint['numero']:02d}",
+            sprint["data_inicio"].strftime("%d/%m/%Y"),
+            cards_str,
+            sprint["entrega"],
+        ]
+        for col_i, val in enumerate(base_vals, 1):
+            cell = ws.cell(row=sp_idx, column=col_i, value=val)
+            cell.fill      = fill_xl(bg)
+            cell.border    = brd_xl()
+            cell.font      = fnt_xl(size=9, bold=(col_i == 1))
+            cell.alignment = aln_xl(
+                h="left" if col_i == 4 else "center", v="center", wrap=True
+            )
+
+        # Colunas de fases (E=5 … I=9)
+        phase_dates = [
+            fases["data_dev_limite"],
+            fases["data_teste_aceitacao"],
+            fases["data_apresentacao"],
+            fases["data_homologacao"],
+            fases["data_deploy"],
+        ]
+        for col_offset, (data, cor_fase) in enumerate(zip(phase_dates, FASE_FILLS)):
+            col_n = 5 + col_offset
+            cell  = ws.cell(row=sp_idx, column=col_n)
+            cell.value     = data.strftime("%d/%m/%Y") if data else "—"
+            cell.border    = brd_xl()
+            cell.alignment = aln_xl(h="center", v="center")
+            if fases["sprint_apertada"]:
+                cell.fill = fill_xl(COR_APERTADA)
+                cell.font = fnt_xl(size=9, bold=True, color="5D3000")
+            else:
+                cell.fill = fill_xl(cor_fase)
+                cell.font = fnt_xl(size=9)
+
+        # Coluna J=10 — Data Fim Sprint
+        cell = ws.cell(row=sp_idx, column=10)
+        cell.value     = sprint["data_fim"].strftime("%d/%m/%Y")
+        cell.fill      = fill_xl(bg)
+        cell.border    = brd_xl()
+        cell.alignment = aln_xl(h="center", v="center")
+        cell.font      = fnt_xl(size=9, bold=True)
+        ws.row_dimensions[sp_idx].height = 28
+
+    # ── Linha de período do projeto ────────────────────────
+    tr = 2 + len(sprints) + 1
+    ws.merge_cells(f"A{tr}:D{tr}")
+    tc = ws[f"A{tr}"]
+    tc.value = (f"PERÍODO DO PROJETO:  {data_inicio.strftime('%d/%m/%Y')}  →  "
+                f"{data_fim_proj.strftime('%d/%m/%Y')}  "
+                f"(~{round((data_fim_proj - data_inicio).days / 7)} semanas)")
+    tc.font      = fnt_xl(bold=True, size=10, color="FFFFFF")
+    tc.fill      = fill_xl("1F4E79")
+    tc.alignment = aln_xl(h="center", v="center")
+    tc.border    = brd_xl()
+    for col_n in range(5, 11):
+        cell = ws.cell(row=tr, column=col_n)
+        cell.fill   = fill_xl("1F4E79")
+        cell.border = brd_xl()
+    ws.row_dimensions[tr].height = 26
 
 # ════════════════════════════════════════════════════════════
 # FLUXO PRINCIPAL
@@ -1023,8 +1246,27 @@ def main():
     if dias_homologacao < 0: dias_homologacao = 0
     horas_homologacao = dias_homologacao * 8
 
-    horas_disp_us = max(0, horas_por_sprint - horas_deploy_sprint - horas_teste_aceitacao - horas_homologacao)
-    ok(f"Sprints de {horas_por_sprint}h: {horas_disp_us}h US + {dias_teste_aceitacao}d Teste Aceite ({horas_teste_aceitacao}h) + {dias_homologacao}d Homolog. ({horas_homologacao}h) + {horas_deploy_sprint}h Deploy.\n")
+    # Dia preferido para Apresentação ao Solicitante
+    secao("Dia de Apresentação ao Solicitante")
+    info("A apresentação ocorre após o Teste de Aceitação, uma vez por sprint.")
+    _DIAS_SEMANA = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira"]
+    for i, d in enumerate(_DIAS_SEMANA, 1):
+        info(f"  [{i}] {d}")
+    while True:
+        opc_dia = ask_int("Dia preferido para Apresentação (1=Segunda … 5=Sexta):")
+        if 1 <= opc_dia <= 5:
+            dia_apresentacao = opc_dia - 1  # 0=Seg … 4=Sex (padrão Python weekday)
+            ok(f"Apresentações agendadas para {_DIAS_SEMANA[dia_apresentacao]}")
+            break
+        aviso("Escolha um número entre 1 e 5.")
+
+    dias_sprint = semanas_sprint * 5
+    dias_livres_dev = max(0, dias_sprint - dias_teste_aceitacao - dias_homologacao)
+    horas_brutas_dev = dias_livres_dev * horas_por_dia
+    horas_disp_us = max(0, horas_brutas_dev - horas_deploy_sprint)
+
+    ok(f"Sprints de {semanas_sprint} semana(s) ({dias_sprint} dias úteis): {dias_livres_dev} dias p/ Dev ({horas_brutas_dev}h) - {horas_deploy_sprint}h Deploy = {horas_disp_us}h livres para US.")
+    ok(f"Fases reservadas: {dias_teste_aceitacao}d Teste Aceite + {dias_homologacao}d Homologação.\n")
 
     # ── Seleção de modo ──────────────────────────────────────────
     secao("Selecione o Modo de Operação")
@@ -1135,7 +1377,8 @@ def main():
         "horas_teste_aceitacao": horas_teste_aceitacao,
         "dias_homologacao": dias_homologacao,
         "horas_homologacao": horas_homologacao,
-        "data_inicio": data_inicio_projeto,
+        "data_inicio":        data_inicio_projeto,
+        "dia_apresentacao":   dia_apresentacao,
     }
 
     gerar_xlsx(requisitos, user_stories, sprints, configs, caminho_xlsx)
