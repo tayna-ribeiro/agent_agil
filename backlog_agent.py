@@ -286,6 +286,59 @@ MUDANÇAS IDENTIFICADAS:
 {mudancas}
 """
 
+PROMPT_GERAR_TESTES_COMPLETO = """\
+Você é um analista de qualidade (QA) especializado em testes de aceitação para software.
+
+Sua tarefa é gerar os testes de aceitação para a User Story abaixo, com base nos critérios fornecidos.
+
+Regras obrigatórias:
+- Gere APENAS os testes realmente necessários — elimine redundâncias, não force quantidade.
+- Cada critério de aceitação pode virar 1 teste direto; só divida em 2 se cobrir situações distintas (ex: sucesso e falha).
+- Seja específico: use os nomes de campos, telas, regras e valores que aparecem nos critérios.
+- Evite testes genéricos. Cada teste deve ser inconfundível com outro US do projeto.
+- Formato obrigatório: "Dado [contexto específico], quando [ação exata], então [resultado mensurável]."
+- Os testes devem ser executáveis manualmente pelo analista de requisitos, sem acesso ao código.
+
+User Story ID: {us_id}
+Título: {titulo}
+História: {historia}
+Critérios de Aceitação:
+{criterios}
+
+Retorne APENAS um JSON válido, sem markdown, sem backticks:
+{{
+  "testes": [
+    "Dado ..., quando ..., então ..."
+  ]
+}}
+"""
+
+PROMPT_GERAR_TESTES_SIMPLES = """\
+Você é um analista de qualidade (QA) especializado em testes de aceitação para software.
+
+Sua tarefa é gerar os testes de aceitação para a User Story abaixo.
+
+Regras obrigatórias:
+- Gere APENAS os testes realmente necessários para validar a entrega — sem redundância, sem testes genéricos.
+- Cada teste deve validar um comportamento específico e observável desta User Story, não de sistemas em geral.
+- Se a US for simples (1 comportamento), gere 1 ou 2 testes. Se for complexa, gere até 5.
+- Evite frases vagas como "verificar se o sistema funciona" ou "confirmar que não há erros".
+- Use nomes reais de telas, campos, botões ou regras quando puder inferir pelo título e história.
+- Formato obrigatório: "Dado [contexto específico], quando [ação exata], então [resultado mensurável]."
+- Os testes devem ser executáveis manualmente pelo analista de requisitos, sem acesso ao código.
+
+User Story ID: {us_id}
+Título: {titulo}
+História: {historia}
+
+Retorne APENAS um JSON válido, sem markdown, sem backticks:
+{{
+  "testes": [
+    "Dado ..., quando ..., então ..."
+  ]
+}}
+"""
+
 def chamar_claude(prompt: str) -> str:
     """Chama a API da Anthropic e retorna o texto da resposta."""
     response = CLIENT.messages.create(
@@ -1067,6 +1120,7 @@ def gerar_xlsx(requisitos: dict, user_stories: list, sprints: list, configs: dic
             c.alignment=aln_xl(h=align,v="center"); c.border=brd_xl()
 
     gerar_aba_cronograma(wb, requisitos, sprints, configs)
+    gerar_aba_testes(wb, user_stories, requisitos.get("projeto", "Projeto"))
     wb.save(caminho)
 
 # ════════════════════════════════════════════════════════════
@@ -1197,6 +1251,179 @@ def gerar_aba_cronograma(wb, requisitos: dict, sprints: list, configs: dict):
         cell.fill   = fill_xl("1F4E79")
         cell.border = brd_xl()
     ws.row_dimensions[tr].height = 26
+
+# ════════════════════════════════════════════════════════════
+# GERAÇÃO DA ABA DE TESTES DE ACEITAÇÃO
+# ════════════════════════════════════════════════════════════
+
+_RESULTADO_OPCOES = "⬜ Não executado,✅ Passou,❌ Falhou,🔄 Reteste necessário"
+
+def _gerar_testes_para_us(us: dict) -> list:
+    """Chama Claude para gerar testes de aceitação de uma US.
+    Usa criterios_aceitacao + historia se disponíveis; caso contrário, apenas título."""
+    criterios = us.get("criterios_aceitacao", [])
+    historia  = us.get("historia", "")
+
+    if criterios:
+        criterios_str = "\n".join(f"- {c}" for c in criterios)
+        prompt = PROMPT_GERAR_TESTES_COMPLETO.format(
+            us_id=us["id"],
+            titulo=us["titulo"],
+            historia=historia,
+            criterios=criterios_str,
+        )
+    else:
+        prompt = PROMPT_GERAR_TESTES_SIMPLES.format(
+            us_id=us["id"],
+            titulo=us["titulo"],
+            historia=historia,
+        )
+
+    try:
+        resposta = chamar_claude(prompt)
+        dados    = extrair_json(resposta)
+        testes   = dados.get("testes", [])
+        if not testes:
+            raise ValueError("Lista de testes vazia.")
+        return testes
+    except Exception as e:
+        aviso(f"Erro ao gerar testes para {us['id']}: {e}")
+        return [
+            f"Verificar manualmente se a funcionalidade '{us['titulo']}' foi entregue.",
+            f"Confirmar que não há erros ou comportamentos inesperados em '{us['titulo']}'.",
+        ]
+
+
+def gerar_testes_aceitacao(user_stories: list) -> list:
+    """Enriquece cada US com a chave 'testes_aceitacao' via Claude."""
+    secao("Gerando Testes de Aceitação...")
+    info("O analista de requisitos usará esses testes após cada entrega do dev.")
+    info("Isso pode levar alguns segundos por User Story...\n")
+
+    total = len(user_stories)
+    for i, us in enumerate(user_stories, 1):
+        info(f"[{i:02d}/{total:02d}] {us['id']} — {us['titulo'][:50]}...")
+        us["testes_aceitacao"] = _gerar_testes_para_us(us)
+        ok(f"{us['id']} → {len(us['testes_aceitacao'])} testes gerados")
+
+    total_testes = sum(len(us["testes_aceitacao"]) for us in user_stories)
+    ok(f"Total de testes gerados: {total_testes}")
+    return user_stories
+
+
+def gerar_aba_testes(wb, user_stories: list, projeto_nome: str = "Projeto") -> None:
+    """Cria (ou substitui) a aba 'Testes de Aceitação' no workbook."""
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    if "Testes de Aceitação" in wb.sheetnames:
+        del wb["Testes de Aceitação"]
+
+    ws = wb.create_sheet("Testes de Aceitação")
+    ws.freeze_panes = "A3"
+
+    # Título
+    ws.merge_cells("A1:I1")
+    ct = ws["A1"]
+    ct.value = (
+        f"TESTES DE ACEITAÇÃO · {projeto_nome.upper()}  |  "
+        f"Preencha após cada entrega do sprint  |  "
+        f"Gerado em {datetime.date.today().strftime('%d/%m/%Y')}"
+    )
+    ct.font      = Font(bold=True, size=11, color="FFFFFF", name="Arial")
+    ct.fill      = PatternFill("solid", start_color="1F4E79", fgColor="1F4E79")
+    ct.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    # Cabeçalhos
+    _s = Side(style="thin", color="BBBBBB")
+    _brd = Border(left=_s, right=_s, top=_s, bottom=_s)
+
+    COLS_T = [
+        "Sprint", "US ID", "Título da US", "# Teste",
+        "Descrição do Teste de Aceitação",
+        "Resultado", "Observação do Analista", "Data", "Testador",
+    ]
+    WIDS_T = [9, 9, 34, 8, 62, 24, 36, 13, 18]
+
+    for i, (col, w) in enumerate(zip(COLS_T, WIDS_T), 1):
+        cell = ws.cell(row=2, column=i, value=col)
+        cell.font      = Font(bold=True, color="FFFFFF", size=10, name="Arial")
+        cell.fill      = PatternFill("solid", start_color="2E75B6", fgColor="2E75B6")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border    = _brd
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[2].height = 22
+
+    # Dados — uma linha por teste
+    row_i      = 3
+    sprint_map = {}   # sprint_label -> cor
+    cor_idx    = 0
+
+    # Mapeia US para sprint a partir dos sprints (user_stories têm 'id' mas não 'sprint_label')
+    # Usaremos us['id'] e procuraremos na lista de sprints se disponível;
+    # caso não tenhamos sprints aqui, deixamos sprint= us.get('epico_id','')
+    for us in user_stories:
+        sprint_label = us.get("_sprint_label", us.get("epico_id", ""))
+        if sprint_label not in sprint_map:
+            sprint_map[sprint_label] = MODULO_CORES[cor_idx % len(MODULO_CORES)]
+            cor_idx += 1
+        bg = sprint_map[sprint_label]
+
+        for num_teste, descricao in enumerate(us.get("testes_aceitacao", []), 1):
+            fixos = [sprint_label, us["id"], us["titulo"], num_teste, descricao]
+            for col_i, val in enumerate(fixos, 1):
+                cell = ws.cell(row=row_i, column=col_i, value=val)
+                cell.fill      = PatternFill("solid", start_color=bg, fgColor=bg)
+                cell.border    = _brd
+                cell.font      = Font(size=9, bold=(col_i in [1, 4]), name="Arial")
+                cell.alignment = Alignment(
+                    horizontal="center" if col_i in [1, 2, 4] else "left",
+                    vertical="center", wrap_text=True
+                )
+
+            # Resultado (col 6)
+            rc = ws.cell(row=row_i, column=6, value="⬜ Não executado")
+            rc.font      = Font(size=9, color="444444", name="Arial")
+            rc.fill      = PatternFill("solid", start_color="F0F0F0", fgColor="F0F0F0")
+            rc.alignment = Alignment(horizontal="center", vertical="center")
+            rc.border    = _brd
+
+            # Observação, Data, Testador (cols 7-9)
+            for col_i in [7, 8, 9]:
+                cell = ws.cell(row=row_i, column=col_i, value="")
+                cell.fill      = PatternFill("solid", start_color="FAFAFA", fgColor="FAFAFA")
+                cell.border    = _brd
+                cell.alignment = Alignment(
+                    horizontal="center" if col_i in [8, 9] else "left",
+                    vertical="center", wrap_text=True
+                )
+
+            ws.row_dimensions[row_i].height = 36
+            row_i += 1
+
+    # Dropdown
+    dv = DataValidation(
+        type="list",
+        formula1=f'"{_RESULTADO_OPCOES}"',
+        showDropDown=False,
+        allow_blank=True,
+    )
+    dv.sqref = f"F3:F{row_i - 1}"
+    ws.add_data_validation(dv)
+
+    # Auto-filter
+    ws.auto_filter.ref = f"A2:I{row_i - 1}"
+
+    # Legenda
+    leg_row = row_i + 1
+    ws.merge_cells(f"A{leg_row}:I{leg_row}")
+    lc = ws.cell(row=leg_row, column=1,
+                 value="LEGENDA:  ⬜ Não executado  |  ✅ Passou  |  ❌ Falhou  |  🔄 Reteste necessário")
+    lc.font      = Font(bold=False, size=9, color="FFFFFF", name="Arial")
+    lc.fill      = PatternFill("solid", start_color="2E75B6", fgColor="2E75B6")
+    lc.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[leg_row].height = 20
+
 
 # ════════════════════════════════════════════════════════════
 # FLUXO PRINCIPAL
@@ -1347,6 +1574,14 @@ def main():
     for sp in sprints:
         cards_str = " + ".join(us["id"] for us in sp["cards"])
         info(f"  Sprint {sp['numero']:02d} ({sp['semana']}) → {cards_str} [Total: {sp['horas_estimadas']}h]")
+
+    # ── Gerar testes de aceitação ────────────────────────────────
+    # Anota cada US com o label da sprint correspondente (para exibir na aba de testes)
+    for sp in sprints:
+        sprint_label = f"S{sp['numero']:02d}"
+        for us in sp["cards"]:
+            us["_sprint_label"] = sprint_label
+    user_stories = gerar_testes_aceitacao(user_stories)
 
     # ── Configuração de saída ────────────────────────────────────
     secao("Configuração de Saída")
