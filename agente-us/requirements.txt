@@ -1,5 +1,3 @@
 anthropic
-python-docx
-openpyxl
 pymupdf
 python-dotenv
